@@ -45,7 +45,7 @@ Demo 1 requires the robot to complete three critical tasks:
 
 ### Python (task 1)
 1. On the Raspberry Pi, install the dependencies (e.g. OpenCV with Aruco support).
-2. Run the script from `Demo 1/Python/`, for example: `python3 <script_name>.py`
+2. Run the script from `Demo 1/Python/`
 3. The detected marker angle is shown on the LCD.
 
 ### Simulink
@@ -57,11 +57,11 @@ Open the `.slx` models in `Demo 1/Simulink/` with MATLAB/Simulink.
 - Two DC drive motors with quadrature encoders (800 counts per revolution)
 - Raspberry Pi with camera
 - LCD display
-- Robot geometry: wheel diameter 5.9 in; wheelbase [measure and fill in] in
+- Robot geometry: wheel diameter 5.9 in
 
 ## Project Management
 
-Task assignments and responsibilities are tracked on the GitHub project board for this repository (see the **Projects** tab: [link to project board]). A record of the board is also kept in `Demo 1/Project_Board/`.
+Task assignments and responsibilities are tracked on the GitHub project board for this repository (see the `Demo 1/Project_Board/`.)
 
 ## Documentation
 
