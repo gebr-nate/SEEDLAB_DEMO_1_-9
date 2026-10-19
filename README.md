@@ -1,4 +1,4 @@
-# EENG350 SEED Lab: Team Repository
+# SEEDLAB_DEMO_1_-9: EENG350 SEED Lab Team Repository
 
 **Course:** EENG350, Systems Exploration, Engineering, and Design Laboratory
 **School:** Colorado School of Mines, Fall 2026
@@ -16,6 +16,7 @@ This repository holds all code, models, and documentation for our SEED Lab robot
 ├── README.md
 └── Demo 1/
     ├── Arduino/
+    ├── Project_Board/
     ├── Python/
     └── Simulink/
 ```
@@ -31,6 +32,7 @@ Demo 1 requires the robot to complete three critical tasks:
 | Folder | Contents |
 |--------|----------|
 | `Demo 1/Arduino/` | Arduino sketches with detailed comments. Includes the motor control sketches for the straight-line move (task 2) and the rotate-then-drive move (task 3). Each uses a cascaded controller: an outer PI position loop and an inner P velocity loop. |
+| `Demo 1/Project_Board/` | Record of the project board: which tasks were assigned and who was responsible for each. |
 | `Demo 1/Python/` | Python code, with detailed comments, for Aruco marker detection and angle calculation, and for displaying the result on the LCD. |
 | `Demo 1/Simulink/` | Simulink models used to model and simulate the system and to design and tune the controllers. |
 
@@ -59,7 +61,7 @@ Open the `.slx` models in `Demo 1/Simulink/` with MATLAB/Simulink.
 
 ## Project Management
 
-Task assignments and responsibilities are tracked on the GitHub project board for this repository: [link to project board]
+Task assignments and responsibilities are tracked on the GitHub project board for this repository (see the **Projects** tab: [link to project board]). A record of the board is also kept in `Demo 1/Project_Board/`.
 
 ## Documentation
 
