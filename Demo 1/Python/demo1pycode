@@ -63,6 +63,7 @@ while True:
         continue
     #convert to greyscale
     grey=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+
     #detect aruco markers using grey,aruco dict, and parameter
     corners,ids,rejected=aruco.detectMarkers(
         grey,
@@ -99,11 +100,11 @@ while True:
             angle_deg=math.degrees(angle_rad)
             print("marker center:", center_x)
             print("pixel offset:", pixel_offset)
-            print("Angle: {:.2f} degrees".format(angle_deg))
+            print("X Angle: {:.2f} degrees".format(angle_deg))
 
     
         #convert to text for lcd
-        message= "Marker Detected\nAngle: {:.2f}".format(angle_deg)
+        message= "Marker Detected\nX Angle: {:.2f}".format(angle_deg)
         if message !=last_message:
             if lcd_queue.empty():
                 lcd_queue.put(message)
