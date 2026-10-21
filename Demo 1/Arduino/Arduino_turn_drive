@@ -4,7 +4,7 @@
 // =====================================================================
 
 // ---- THE ONLY VALUES YOU CHANGE EACH RUN ----
-const float DESIRED_ANGLE_DEG   = 90.0;    // degrees, + = counterclockwise (turn left), 0 = no turn
+const float DESIRED_ANGLE_DEG   = -90.0;    // degrees, + = counterclockwise (turn left), 0 = no turn
 const float DESIRED_DISTANCE_FT = 4.0;     // feet (1 to 10)
 
 // ---- Robot geometry ----
@@ -12,7 +12,7 @@ const float WHEEL_DIAMETER_IN = 5.9;
 const float WHEEL_RADIUS_IN   = WHEEL_DIAMETER_IN / 2.0;
 // !!! MEASURE THIS: distance between the centers of the two wheels' contact patches (inches).
 // 11.0 is a PLACEHOLDER. Rotation accuracy depends heavily on this number.
-const float WHEELBASE_IN      = 12.5;
+const float WHEELBASE_IN      = 16;
 
 // If the robot turns the wrong way for a positive angle, flip this to -1.
 // (Assumes motor 1 [index 0] is the LEFT wheel and motor 2 [index 1] is the RIGHT wheel.)
@@ -38,7 +38,7 @@ const int encA[2]   = {2, 3};
 const int encB[2]   = {5, 6};
 
 // ---- Encoder ----
-const float COUNTS_PER_REV = 800.0;
+const float COUNTS_PER_REV = 800;
 volatile long encoderCount[2] = {0, 0};
 long prevPos_counts[2] = {0, 0};
 
