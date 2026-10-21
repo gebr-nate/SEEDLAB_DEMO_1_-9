@@ -16,7 +16,7 @@ const int encA[2]   = {2, 3};
 const int encB[2]   = {5, 6};
 
 // ---- Distance to drive ----
-const float DISTANCE_FT = 4;           // <-- CHANGE THIS (feet)
+const float DISTANCE_FT = 4;               // <-- CHANGE THIS (feet)
 const unsigned long START_DELAY_MS = 3000; // wait after power-up so you can unplug/place the robot
 
 // ---- Robot geometry ----
@@ -44,41 +44,6 @@ float target_rad = 0;             // wheel rotation target (same for both motors
 void encoderISR1() { encoderCount[0] += (digitalRead(encB[0]) == HIGH) ? -1 : 1; }
 void encoderISR2() { encoderCount[1] += (digitalRead(encB[1]) == HIGH) ? 1 : -1; }
 
-// ---- Optional: type a new distance in feet over Serial (still works if plugged in) ----
-void readDistanceFromSerial() {
-  static char buf[16];
-  static int idx = 0;
-
-  while (Serial.available() > 0) {
-    char c = Serial.read();
-    if (c == '\n' || c == '\r') {               // end of message
-      if (idx > 0) {
-        buf[idx] = '\0';
-        float feet = atof(buf);
-
-        // Start a fresh move from the current spot
-        noInterrupts();
-        encoderCount[0] = 0;
-        encoderCount[1] = 0;
-        interrupts();
-        prevPos_counts[0] = 0;
-        prevPos_counts[1] = 0;
-        integral_error[0] = 0;
-        integral_error[1] = 0;
-
-        target_rad = (feet * 12.0) / WHEEL_RADIUS_IN;
-
-        Serial.print("Moving ");
-        Serial.print(feet, 2);
-        Serial.println(" ft");
-      }
-      idx = 0;
-    } else if (idx < (int)sizeof(buf) - 1) {
-      buf[idx++] = c;
-    }
-  }
-}
-
 void setup() {
   pinMode(enablePin, OUTPUT);
   for (int i = 0; i < 2; i++) {
@@ -103,8 +68,6 @@ void setup() {
 }
 
 void loop() {
-  readDistanceFromSerial();                     // optional serial override
-
   // ---- Run the controller at a fixed 10 ms rate ----
   if (millis() - last_time_ms < desired_Ts_ms) return;
   last_time_ms += desired_Ts_ms;
