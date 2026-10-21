@@ -4,10 +4,10 @@
 
 | Label | Subteam | Name |
 |-------|---------|------|
-| C1 | Controls | ____________ |
-| C2 | Controls | ____________ |
-| V1 | Computer Vision | ____________ |
-| V2 | Computer Vision | ____________ |
+| C1 | Controls | Nathan Gebre |
+| C2 | Controls | Bryce Lapham |
+| V1 | Computer Vision | Jake Toschik |
+| V2 | Computer Vision | Megan Brady |
 
 ## Controls
 
