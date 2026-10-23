@@ -47,8 +47,8 @@ lcd_thread.start()
 
 #camera set
 camera=cv2.VideoCapture(0)#open cam
-camera.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)#image is 320x240 pixels
+camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)#image is 640x480 pixels
 camera.set(cv2.CAP_PROP_FPS, 30)
 camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
@@ -74,8 +74,8 @@ while True:
     #make copy so can draw boxes on markers
     overlay = frame.copy()
     #quadrant lines on cam
-    cv2.line(overlay, (160, 0), (160, 240), (0,255,0), 2)
-    cv2.line(overlay, (0, 120), (320, 120), (0,255,0), 2)
+    cv2.line(overlay, (320, 0), (320, 480), (0,255,0), 2)
+    cv2.line(overlay, (0, 240), (640, 240), (0,255,0), 2)
     
     #see if markers found, verify if its marker 0 for demo1
     if ids is not None:
@@ -91,11 +91,11 @@ while True:
         #center point on image
             cv2.circle(overlay, (center_x, center_y), 5, (0, 0, 255), -1)
         #cam image center
-            camera_center_x=160
+            camera_center_x=320
         #horiz pixel diff from camera center
             pixel_offset=camera_center_x-center_x
         #focal length found from camera cal
-            fx=326.25
+            fx=652.5
             angle_rad=math.atan(pixel_offset/fx)#horizontal angle calc
             angle_deg=math.degrees(angle_rad)
             print("marker center:", center_x)
