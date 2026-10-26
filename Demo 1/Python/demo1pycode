@@ -1,6 +1,7 @@
-#Mini project - CV code that dettects aruco marker and creates
-# quadrants, whichever quadrant marker is in determines wheel position and
-#sends to arduino
+# Demo 1 ArUco Marker Angle Detection
+# Uses the Raspberry Pi camera to detect ArUco marker 0,
+# calculates its horizontal angle relative to the camera center,
+# and displays the calculated angle on the LCD.
 
 
 import math
