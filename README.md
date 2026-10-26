@@ -2,8 +2,8 @@
 
 **Course:** EENG350, Systems Exploration, Engineering, and Design Laboratory
 **School:** Colorado School of Mines, Fall 2026
-**Team:** [Team name/number]
-**Members:** [Member 1], [Member 2], [Member 3], [Member 4]
+**Team:** [Team 9]
+**Members:** [Megan Brady], [Nathan Gebre-Hiwot], [Jake Toschik], [Bryson Lapham]
 
 ## Project Overview
 
