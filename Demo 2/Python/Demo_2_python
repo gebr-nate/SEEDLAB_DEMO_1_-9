@@ -1,0 +1,142 @@
+# Demo 1 ArUco Marker Angle Detection
+# Uses the Raspberry Pi camera to detect ArUco marker 0,
+# calculates its horizontal angle relative to the camera center,
+# and displays the calculated angle on the LCD.
+
+
+import math
+import cv2
+from cv2 import aruco
+from time import sleep#for cam stuff
+import threading
+import queue
+import board
+import busio#lcd libraries
+import adafruit_character_lcd.character_lcd_rgb_i2c as character_lcd
+
+#lcd set
+import board
+lcd_queue = queue.Queue(maxsize=1)#lcd message queue for threading, max size 1 so it doesnt flood queue
+
+lcd_columns = 16
+lcd_rows = 2#lcd size
+
+i2c = board.I2C()#i2c connection
+
+lcd = character_lcd.Character_LCD_RGB_I2C(
+    i2c,
+    lcd_columns,
+    lcd_rows
+)#tells adafruit lib to create lcd that uses i2c and is 16x2
+
+aruco_dict=aruco.getPredefinedDictionary(aruco.DICT_6X6_50) #aruco dic
+parameters=aruco.DetectorParameters() #detector parameters
+parameters.minMarkerPerimeterRate = 0.01#controls min marker consideration
+
+def update_lcd():
+    while True:#doesnt end on its own
+            message = lcd_queue.get()#get queue message
+            lcd.message = message#display message
+#lcd thread start
+lcd_thread = threading.Thread(target=update_lcd)#new thread whose job is to run the updatelcd func
+lcd_thread.daemon = True #keep program alive
+lcd_thread.start()
+
+
+#arduino serial connection
+
+
+#camera set
+camera=cv2.VideoCapture(0)#open cam
+camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)#image is 640x480 pixels
+camera.set(cv2.CAP_PROP_FPS, 30)
+camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+sleep(0.5) #camera time to start
+last_message=""#used later so dont need to keep clearing and rewriting lcd
+
+#cam loop for aruco detect+greyscale
+while True:
+    ret,frame=camera.read()#take pic
+    if not ret:
+        print("Didn't read camera")#if didnt take pic
+        continue
+    #convert to greyscale
+    grey=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+
+    #detect aruco markers using grey,aruco dict, and parameter
+    corners,ids,rejected=aruco.detectMarkers(
+        grey,
+        aruco_dict,
+        parameters=parameters
+        )
+
+    #make copy so can draw boxes on markers
+    overlay = frame.copy()
+    #quadrant lines on cam
+    cv2.line(overlay, (320, 0), (320, 480), (0,255,0), 2)
+    cv2.line(overlay, (0, 240), (640, 240), (0,255,0), 2)
+    
+    #see if markers found, verify if its marker 0 for demo1
+    if ids is not None:
+        ids=ids.flatten()#changes to one dim arrayy
+        aruco.drawDetectedMarkers(overlay,corners,ids)#draws outline around markers in overlay
+    #look for marker 0
+        if 0 in ids:
+            marker_index=list(ids).index(0)
+            marker_corners = corners[marker_index][0]
+        #calc center of marker 0
+            center_x=int(marker_corners[:,0].mean())
+            center_y=int(marker_corners[:,1].mean())
+        #center point on image
+            cv2.circle(overlay, (center_x, center_y), 5, (0, 0, 255), -1)
+        #cam image center
+            camera_center_x=320
+        #horiz pixel diff from camera center
+            pixel_offset=camera_center_x-center_x
+        #focal length found from camera cal
+            fx=652.5
+            angle_rad=math.atan(pixel_offset/fx)#horizontal angle calc
+            angle_deg=math.degrees(angle_rad)
+            print("marker center:", center_x)
+            print("pixel offset:", pixel_offset)
+            print("X Angle: {:.2f} degrees".format(angle_deg))
+
+    
+        #convert to text for lcd
+        message= "Marker Detected\nX Angle: {:.2f}".format(angle_deg)
+        if message !=last_message:
+            if lcd_queue.empty():
+                lcd_queue.put(message)
+            last_message=message
+       
+
+    else:
+        #print("no markers found")
+        message=last_message
+        
+    # only send to lcd if message has changed
+    if message != last_message:
+        lcd_queue.put(message)#main thread puts message
+        
+    #send wheel goals to arduino
+        if ids is not None:#make sure marker exisits
+            command = "{}{}\n".format(right_goal,left_goal)#serial to the arduino
+            try:
+                arduino.write(command.encode())#convert to bytes, then send to arduino
+                print("sent to Arduino", command.strip())
+
+            except serial.SerialTimeoutException:#for timeout
+                print("write to arduino time out")
+        last_message=message#lcd thread displays
+
+    cv2.imshow("aruco detection", overlay)#display cam image
+    k=cv2.waitKey(1)&0xFF#wait 1ms and see if q pressed
+    if k==ord('q'):#stop program when q press
+        break
+
+camera.release()
+arduino.close()
+cv2.destroyAllWindows()
+        
