@@ -1,0 +1,98 @@
+"""
+A2 2.b 
+Megan Brady 
+"""
+
+import cv2  #CV library 
+import numpy as np
+
+#Starting HSV limits for green
+LOWER_GREEN = np.array([35, 70, 40], dtype=np.uint8)
+UPPER_GREEN = np.array([90, 255, 255], dtype=np.uint8)
+
+MIN_CONTOUR_AREA = 1000
+
+camera = cv2.VideoCapture(0)
+camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+if not camera.isOpened():
+    raise RuntimeError("Could not open camera. Try VideoCapture(1) instead.")
+
+#A 5x5 kernel
+kernel = np.ones((5, 5), dtype=np.uint8)
+
+#make sure camera is connected 
+try:
+    while True:
+        success, frame = camera.read()
+        if not success:
+            print("Could not capture an image from the camera.")
+            break
+
+        #convert to HSV 
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        #White pixels are within the green HSV range; black pixels are not.
+        raw_mask = cv2.inRange(hsv, LOWER_GREEN, UPPER_GREEN)
+
+        #Cleaning:
+        #Opening = erosion followed by dilation: removes small specks.
+        clean_mask = cv2.morphologyEx(
+            raw_mask, cv2.MORPH_OPEN, kernel, iterations=1
+        )
+
+        #Closing = dilation followed by erosion: fills small gaps.
+        clean_mask = cv2.morphologyEx(
+            clean_mask, cv2.MORPH_CLOSE, kernel, iterations=2
+        )
+
+        #Find the outside edges of the objects remaining in the clean mask.
+        contour_output = cv2.findContours(
+            clean_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        contours = contour_output[-2]  # Compatible with OpenCV 3 and 4.
+
+        #Reject tiny regions, then use the largest remaning green region
+        large_contours = [
+            contour for contour in contours
+            if cv2.contourArea(contour) >= MIN_CONTOUR_AREA
+        ]
+
+        displayed_frame = frame.copy()
+        if large_contours:
+            green_shape = max(large_contours, key=cv2.contourArea)
+            cv2.drawContours(
+                displayed_frame, [green_shape], -1, (255, 0, 255), 3
+            )
+            area = cv2.contourArea(green_shape)
+            cv2.putText(
+                displayed_frame,
+                f"Green shape detected - area: {area:.0f}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 0, 255),
+                2,
+            )
+        else:
+            cv2.putText(
+                displayed_frame,
+                "No green shape detected",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 0, 255),
+                2,
+            )
+
+        cv2.imshow("Green Shape Detection", displayed_frame)
+        cv2.imshow("Raw Green Mask", raw_mask)
+        cv2.imshow("Cleaned Green Mask", clean_mask)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            break
+finally:
+    camera.release()
+    cv2.destroyAllWindows()
