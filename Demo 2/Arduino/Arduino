@@ -1,24 +1,31 @@
-// ============================================================
-// Demo 2, Trial 1: spin in place (SEARCH) until 'F' is received,
-// then drive forward a hardcoded distance (DRIVE) and hold (DONE).
-//
-// Send 'F' over serial (Serial Monitor now, Raspberry Pi later).
-// Press reset or cycle power to run again.
-// ============================================================
-
-// ---- Modes ----
 enum Mode { SEARCH, DRIVE, DONE };
 Mode mode = SEARCH;
-bool startDrive = false;                  // set by serial 'F', handled in the control loop
+bool startDrive = false;                  // set when a valid message arrives
 
-// ---- Settings you will tune ----
+// ---- Search setting ----
 const float SEARCH_SPEED = 2.0;           // wheel speed while spinning [rad/s]
-const float DRIVE_DISTANCE_FT = 3.0;      // hardcoded forward distance [ft]
-const float POS_DEADBAND_RAD = 0.05;      // stop commanding motion when this close to target
+
+// ---- Camera / marker (must match the Pi's resolution) ----
+const float FX = 326.25;                  // focal length in pixels (320x240 calibration)
+const float MARKER_WIDTH_IN = 2.0;        // printed marker width [in]
+
+// ---- Stopping geometry ----
+const float STOP_DISTANCE_IN = 15.0;      // stop this far from the marker [in] (must be under 18 = 1.5 ft)
+const float CAMERA_OFFSET_IN = 0.0;       // how far the camera sits AHEAD of the wheel midpoint [in]
+
+// ---- Sanity check on the measured distance (rejects bad detections) ----
+const float MIN_DIST_IN = 30.0;           // ~2.5 ft
+const float MAX_DIST_IN = 100.0;          // ~8.3 ft
 
 // ---- Robot geometry ----
 const float WHEEL_DIAMETER_IN = 5.9;
 const float WHEEL_RADIUS_IN = WHEEL_DIAMETER_IN / 2.0;
+
+// ---- Drive target (set when the message arrives) ----
+float target_rad = 0;                     // wheel rotation to drive [rad]
+
+// ---- Deadband ----
+const float POS_DEADBAND_RAD = 0.05;      // stop commanding motion when this close to target
 
 // ---- Timing ----
 const unsigned long desired_Ts_ms = 10;   // sample time (100 Hz loop)
@@ -57,13 +64,37 @@ float integral_error[2] = {0, 0};
 void encoderISR1() { encoderCount[0] += (digitalRead(encB[0]) == HIGH) ? 1 : -1; }
 void encoderISR2() { encoderCount[1] += (digitalRead(encB[1]) == HIGH) ? -1 : 1; }
 
-// ---- Check serial for commands (non-blocking) ----
-// 'F' = marker found -> stop searching and start driving
+// ---- Read the marker width (pixels) from serial, non-blocking ----
 void readSerialCommand() {
+  static char buf[16];
+  static int idx = 0;
+
   while (Serial.available() > 0) {
     char c = Serial.read();
-    if (c == 'F' && mode == SEARCH) {
-      startDrive = true;
+
+    if (c == '\n' || c == '\r') {               // end of message
+      buf[idx] = '\0';
+      if (idx > 0 && mode == SEARCH) {
+        float width_px = atof(buf);             // text -> number (garbage gives 0)
+
+        if (width_px > 0) {
+          // Pinhole camera model: distance = fx * real_width / pixel_width
+          float distance_in = (FX * MARKER_WIDTH_IN) / width_px;
+
+          if (distance_in >= MIN_DIST_IN && distance_in <= MAX_DIST_IN) {
+            // Distance the robot center must travel
+            float drive_in = distance_in + CAMERA_OFFSET_IN - STOP_DISTANCE_IN;
+            if (drive_in < 0) drive_in = 0;
+
+            // Inches -> wheel radians
+            target_rad = drive_in / WHEEL_RADIUS_IN;
+            startDrive = true;
+          }
+        }
+      }
+      idx = 0;                                  // ready for the next message
+    } else if (idx < (int)sizeof(buf) - 1) {
+      buf[idx++] = c;
     }
   }
 }
@@ -86,7 +117,7 @@ void setup() {
 }
 
 void loop() {
-  readSerialCommand();                          // check for commands every pass
+  readSerialCommand();                          // check for messages every pass
 
   // ---- Run the controller at a fixed 10 ms rate ----
   if (millis() - last_time_ms < desired_Ts_ms) return;
@@ -101,9 +132,6 @@ void loop() {
   counts[1] = encoderCount[1];
   interrupts();
 
-  // ---- Handle the SEARCH -> DRIVE transition ----
-  // Use the current counts as "zero" so the drive distance is measured
-  // from wherever the robot stopped spinning.
   if (startDrive) {
     startDrive = false;
     driveStart_counts[0] = counts[0];
@@ -112,9 +140,6 @@ void loop() {
     integral_error[1] = 0;
     mode = DRIVE;
   }
-
-  // Target wheel rotation for the hardcoded distance [rad]
-  float target_rad = (DRIVE_DISTANCE_FT * 12.0) / WHEEL_RADIUS_IN;
 
   for (int i = 0; i < 2; i++) {
     // ---- Measurements ----
@@ -130,7 +155,7 @@ void loop() {
       desired_speed = (i == 0) ? -SEARCH_SPEED : SEARCH_SPEED;
 
     } else if (mode == DRIVE) {
-      // Wheel position measured since the drive began [rad]
+      // Wheel position since the drive began [rad]
       float actual_pos = 2 * PI * (float)(counts[i] - driveStart_counts[i]) / COUNTS_PER_REV;
 
       // Outer loop: PI position -> desired speed
@@ -152,7 +177,6 @@ void loop() {
       // DONE: hold still
       desired_speed = 0;
     }
-
     desired_speed = constrain(desired_speed, -MAX_SPEED, MAX_SPEED);
 
     // ---- Inner loop: P velocity -> voltage ----
@@ -169,16 +193,5 @@ void loop() {
     }
     unsigned int PWM = 255 * fabs(Voltage) / Battery_Voltage;
     analogWrite(pwmPin[i], min(PWM, 255));
-  }
-
-  // ---- Logging at 20 Hz ----
-  log_counter++;
-  if (log_counter >= LOG_EVERY) {
-    log_counter = 0;
-    Serial.print(current_time);
-    Serial.print("\t");
-    if (mode == SEARCH) Serial.println("SEARCH");
-    else if (mode == DRIVE) Serial.println("DRIVE");
-    else Serial.println("DONE");
   }
 }
