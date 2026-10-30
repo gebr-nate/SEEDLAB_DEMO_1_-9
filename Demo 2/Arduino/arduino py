@@ -1,0 +1,188 @@
+enum Mode { SEARCH, DRIVE, DONE };
+Mode mode = SEARCH;
+bool startDrive = false;                  // set when a valid distance arrives
+
+// ---- Search setting ----
+const float SEARCH_SPEED = 2.0;           // wheel speed while spinning [rad/s]
+
+// ---- Sanity check on the received distance (rejects garbage) ----
+const float MIN_DIST_IN = 0.5;            // ignore tiny/zero values
+const float MAX_DIST_IN = 200.0;          // ignore absurdly large values
+
+// ---- Robot geometry ----
+const float WHEEL_DIAMETER_IN = 5.9;
+const float WHEEL_RADIUS_IN = WHEEL_DIAMETER_IN / 2.0;
+
+// ---- Drive target (set when the message arrives) ----
+float target_rad = 0;                     // wheel rotation to drive [rad]
+
+// ---- Deadband ----
+const float POS_DEADBAND_RAD = 0.05;      // stop commanding motion when this close to target
+
+// ---- Timing ----
+const unsigned long desired_Ts_ms = 10;   // sample time (100 Hz loop)
+unsigned long last_time_ms;
+unsigned long start_time_ms;
+float current_time;                       // seconds since start
+
+// ---- Pins (index 0 = motor 1, index 1 = motor 2) ----
+const int enablePin = 4;
+const int dirPin[2] = {7, 8};
+const int pwmPin[2] = {9, 10};
+const int encA[2]   = {2, 3};
+const int encB[2]   = {5, 6};
+
+// ---- Encoder ----
+const float COUNTS_PER_REV = 800.0;
+volatile long encoderCount[2] = {0, 0};
+long prevPos_counts[2] = {0, 0};
+long driveStart_counts[2] = {0, 0};       // encoder counts when the drive began
+
+// ---- Controller gains ----
+float Kp = 3;                     // inner velocity loop: volts per (rad/s)
+float Kp_pos = 5.0;               // outer position loop: (rad/s) per rad
+float Ki_pos = 0.5;               // outer position loop integral
+const float MAX_SPEED = 8.0;      // cap on requested wheel speed [rad/s]
+const float Battery_Voltage = 7.6;
+
+// ---- Controller state ----
+float integral_error[2] = {0, 0};
+
+// ---- Encoder ISRs ----
+void encoderISR1() { encoderCount[0] += (digitalRead(encB[0]) == HIGH) ? 1 : -1; }
+void encoderISR2() { encoderCount[1] += (digitalRead(encB[1]) == HIGH) ? -1 : 1; }
+
+// ---- Read the distance (inches) from serial, non-blocking. Used once. ----
+void readSerialCommand() {
+  static char buf[16];
+  static int idx = 0;
+
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+
+    if (c == '\n' || c == '\r') {               // end of message
+      buf[idx] = '\0';
+      if (idx > 0) {
+        float distance_in = atof(buf);          // text -> number (garbage gives 0)
+
+        if (distance_in >= MIN_DIST_IN && distance_in <= MAX_DIST_IN) {
+          // Inches -> wheel radians
+          target_rad = distance_in / WHEEL_RADIUS_IN;
+          startDrive = true;
+          Serial.end();                         // close serial: no more input accepted
+          return;
+        }
+      }
+      idx = 0;                                  // invalid message, wait for the next one
+    } else if (idx < (int)sizeof(buf) - 1) {
+      buf[idx++] = c;
+    }
+  }
+}
+
+void setup() {
+  pinMode(enablePin, OUTPUT);
+  for (int i = 0; i < 2; i++) {
+    pinMode(dirPin[i], OUTPUT);
+    pinMode(pwmPin[i], OUTPUT);
+    pinMode(encA[i], INPUT);
+    pinMode(encB[i], INPUT);
+  }
+  attachInterrupt(digitalPinToInterrupt(encA[0]), encoderISR1, RISING);
+  attachInterrupt(digitalPinToInterrupt(encA[1]), encoderISR2, RISING);
+  digitalWrite(enablePin, HIGH);                // motor driver on
+
+  Serial.begin(115200);
+  last_time_ms = millis();
+  start_time_ms = last_time_ms;
+}
+
+void loop() {
+  if (mode == SEARCH && !startDrive) {
+    readSerialCommand();                        // only listen while searching
+  }
+
+  // ---- Run the controller at a fixed 10 ms rate ----
+  if (millis() - last_time_ms < desired_Ts_ms) return;
+  last_time_ms += desired_Ts_ms;
+
+  float Ts = (float)desired_Ts_ms / 1000.0;
+  current_time = (float)(millis() - start_time_ms) / 1000.0;
+
+  long counts[2];
+  noInterrupts();
+  counts[0] = encoderCount[0];
+  counts[1] = encoderCount[1];
+  interrupts();
+
+  if (startDrive) {
+    startDrive = false;
+    driveStart_counts[0] = counts[0];
+    driveStart_counts[1] = counts[1];
+    integral_error[0] = 0;
+    integral_error[1] = 0;
+    mode = DRIVE;                               // stops spinning, starts driving
+  }
+
+  bool atTarget[2] = {false, false};
+
+  for (int i = 0; i < 2; i++) {
+    // ---- Measurements ----
+    float actual_speed = 2 * PI * (float)(counts[i] - prevPos_counts[i]) / COUNTS_PER_REV / Ts;
+    prevPos_counts[i] = counts[i];
+
+    // ---- Speed command depends on the mode ----
+    float desired_speed = 0;
+
+    if (mode == SEARCH) {
+      // Spin in place: wheels turn in opposite directions.
+      // If the robot spins the wrong way, swap the signs.
+      desired_speed = (i == 0) ? -SEARCH_SPEED : SEARCH_SPEED;
+
+    } else if (mode == DRIVE) {
+      // Wheel position since the drive began [rad]
+      float actual_pos = 2 * PI * (float)(counts[i] - driveStart_counts[i]) / COUNTS_PER_REV;
+
+      // Outer loop: PI position -> desired speed
+      float pos_error = target_rad - actual_pos;
+
+      if (fabs(pos_error) < POS_DEADBAND_RAD) {
+        desired_speed = 0;                      // close enough, stop twitching
+        integral_error[i] = 0;
+        atTarget[i] = true;
+      } else {
+        integral_error[i] += pos_error * Ts;
+        desired_speed = Kp_pos * pos_error + Ki_pos * integral_error[i];
+
+        if (desired_speed > MAX_SPEED || desired_speed < -MAX_SPEED) {
+          integral_error[i] -= pos_error * Ts;  // anti-windup
+        }
+      }
+
+    } else {
+      // DONE: hold still
+      desired_speed = 0;
+    }
+    desired_speed = constrain(desired_speed, -MAX_SPEED, MAX_SPEED);
+
+    // ---- Inner loop: P velocity -> voltage ----
+    float error = desired_speed - actual_speed;
+    float Voltage = Kp * error;
+
+    // ---- Output ----
+    if (i == 0) {
+      // Motor 0 stays normal
+      digitalWrite(dirPin[i], (Voltage > 0) ? HIGH : LOW);
+    } else {
+      // Motor 1 is physically reversed
+      digitalWrite(dirPin[i], (Voltage > 0) ? LOW : HIGH);
+    }
+    unsigned int PWM = 255 * fabs(Voltage) / Battery_Voltage;
+    analogWrite(pwmPin[i], min(PWM, 255));
+  }
+
+  // Both wheels reached the target: finish
+  if (mode == DRIVE && atTarget[0] && atTarget[1]) {
+    mode = DONE;
+  }
+}
