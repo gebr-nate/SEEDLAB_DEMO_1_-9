@@ -1,0 +1,165 @@
+
+# EENG350 Demo 2 
+# Trial 1: approach and stop. Trial 2: approach and stop + turn with arrow
+
+import math
+import time
+import cv2
+import numpy as np
+import board
+import serial
+import adafruit_character_lcd.character_lcd_rgb_i2c as charlcd
+
+TRIAL = 2                  # Switch to 1 between runs for Trial 1
+RUN_MOTORS = False         # False = show commands without moving motors
+FX = 652.5                 # Your Demo 1 focal length; verify with printed 2" marker
+PORT = '/dev/ttyACM0'      # Verify Arduino's USB serial port
+
+lcd = charlcd.Character_LCD_RGB_I2C(board.I2C(), 16, 2)
+lcd.color = [0, 100, 0]
+cam = cv2.VideoCapture(0)
+cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+if not cam.isOpened():
+    raise RuntimeError('LifeCam not found')
+
+arduino = serial.Serial(PORT, 115200, timeout=0.1) if RUN_MOTORS else None
+if arduino:
+    time.sleep(2)  # Opening serial can reset the Arduino
+    arduino.reset_input_buffer()
+
+params = cv2.aruco.DetectorParameters()
+params.minMarkerPerimeterRate = 0.01
+detector = cv2.aruco.ArucoDetector(
+    cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50), params)
+
+
+def send(command):
+    print('Pi -> Arduino:', command)
+    if arduino:
+        arduino.write((command + '\n').encode())
+
+
+def wait_for(reply, timeout=8):
+    if not arduino:                 # Bench test: no movement actually happens
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        message = arduino.readline().decode(errors='replace').strip()
+        if message == reply:
+            return
+    raise TimeoutError(f'Arduino never sent {reply}')
+
+
+def find_marker(gray):
+    corners, ids, _ = detector.detectMarkers(gray)
+    if ids is not None:
+        for i, value in enumerate(ids.flatten()):
+            if value == 0:
+                return corners[i][0]
+    return None
+
+
+def see_beacon(frame):
+    """Return (angle_left_positive, camera_distance_inches, arrow) or None."""
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    green = cv2.inRange(hsv, (35, 65, 45), (95, 255, 255))
+    red = (cv2.inRange(hsv, (0, 65, 45), (13, 255, 255)) |
+           cv2.inRange(hsv, (167, 65, 45), (179, 255, 255)))
+
+    arrow = None
+    for name, mask in [('LEFT', green), ('RIGHT', red)]:
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            area = cv2.contourArea(contour)
+            if area < 10 or h < 4 or not 1.1 < w/h < 2.4:
+                continue
+            m = cv2.moments(contour)
+            if m['m00'] and (arrow is None or area > arrow[0]):
+                arrow = (area, name, x, y, w, h, m['m10']/m['m00'])
+
+    corners = find_marker(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+
+    # Provided beacons have black backgrounds. Crop around marker using
+    # the colored arrow and add white padding if normal detection fails.
+    if corners is None and arrow:
+        _, name, x, y, w, h, arrow_x = arrow
+        side = round(h * 660 / 313)
+        marker_x = arrow_x + (2.25*h if name == 'LEFT' else -2.25*h)
+        x0 = round(marker_x - side/2)
+        y0 = round(y + h/2 - side/2)
+        H, W = frame.shape[:2]
+        x1, y1 = max(0, x0), max(0, y0)
+        x2, y2 = min(W, x0+side), min(H, y0+side)
+        if side >= 15 and x2-x1 >= side*.75 and y2-y1 >= side*.75:
+            pad = max(4, round(side*.2))
+            crop = cv2.copyMakeBorder(frame[y1:y2, x1:x2],
+                                     pad, pad, pad, pad,
+                                     cv2.BORDER_CONSTANT, value=(255, 255, 255))
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            scale = max(1, round(180/gray.shape[0]))
+            gray = cv2.resize(gray, None, fx=scale, fy=scale,
+                              interpolation=cv2.INTER_NEAREST)
+            corners = find_marker(gray)
+            if corners is not None:
+                corners = corners/scale + [x1-pad, y1-pad]
+
+    if corners is None:
+        return None               # Never navigate from arrow color alone
+
+    center_x = float(corners[:, 0].mean())
+    edges = np.roll(corners, -1, axis=0) - corners
+    side_px = np.linalg.norm(edges, axis=1).mean()
+    if side_px <= 3:
+        return None
+
+    angle = math.degrees(math.atan((320 - center_x)/FX))
+    distance = 2.0 * FX / side_px  # 2-inch marker; approximate range
+    direction = arrow[1] if arrow else 'UNKNOWN'
+    return angle, distance, direction
+
+
+try:
+    for step in range(12):       # Up to one full 360-degree scan
+        lcd.message = f'Search {step+1}/12\nTurning 30 deg'
+        send('TURN,30')          # Arduino turns exactly 30 degrees
+        wait_for('TURN_DONE')    # Must be stopped before taking photo
+        time.sleep(0.2)         # Allow camera vibration to settle
+
+        target = None
+        for _ in range(7):      # Several new frames at same heading
+            ok, frame = cam.read()
+            if not ok:
+                raise RuntimeError('Camera read failed')
+            result = see_beacon(frame)
+            if result:
+                target = result
+                if TRIAL == 1 or result[2] != 'UNKNOWN':
+                    break
+
+        if target is not None:
+            angle, distance, arrow = target
+            if TRIAL == 2 and arrow == 'UNKNOWN':
+                raise RuntimeError('Marker found, but arrow direction not recognized')
+            lcd.message = f'Marker ID 0\nAngle:{angle:+.1f} deg'
+            print(f'Found: angle={angle:+.2f}, range={distance:.1f}in, arrow={arrow}')
+            # Angle is relative to CURRENT heading, not cumulative scan angle.
+            # Arduino computes wheel motion and stopping position.
+            send(f'TARGET,{angle:.2f},{distance:.1f},{arrow},{TRIAL}')
+            wait_for('TARGET_DONE', timeout=40)
+            lcd.message = 'Trial complete' if RUN_MOTORS else 'Camera test only'
+            break
+    else:
+        lcd.message = 'Marker not found'
+        print('No marker ID 0 detected after full scan')
+
+except (KeyboardInterrupt, Exception) as exc:
+    print('Stopped:', exc)
+finally:
+    send('STOP')
+    if arduino:
+        arduino.close()
+    cam.release()
