@@ -1,7 +1,5 @@
-# Demo 1 ArUco Marker Angle Detection
-# Uses the Raspberry Pi camera to detect ArUco marker 0,
-# calculates its horizontal angle relative to the camera center,
-# and displays the calculated angle on the LCD.
+#demo2 - jake toschikk locate aruco beacon, determine angle and distance
+#approach beacon, and determine arrow direction
 
 
 import math
@@ -13,9 +11,17 @@ import queue
 import board
 import busio#lcd libraries
 import adafruit_character_lcd.character_lcd_rgb_i2c as character_lcd
+import serial
 
-#lcd set
-import board
+
+#serial setup
+arduino = serial.Serial(
+    '/dev/ttyACM0',
+    115200,
+    timeout=1
+    )
+sleep(2)
+
 lcd_queue = queue.Queue(maxsize=1)#lcd message queue for threading, max size 1 so it doesnt flood queue
 
 lcd_columns = 16
@@ -43,9 +49,6 @@ lcd_thread.daemon = True #keep program alive
 lcd_thread.start()
 
 
-#arduino serial connection
-
-
 #camera set
 camera=cv2.VideoCapture(0)#open cam
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -55,6 +58,7 @@ camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
 sleep(0.5) #camera time to start
 last_message=""#used later so dont need to keep clearing and rewriting lcd
+
 
 #cam loop for aruco detect+greyscale
 while True:
@@ -76,7 +80,6 @@ while True:
     overlay = frame.copy()
     #quadrant lines on cam
     cv2.line(overlay, (320, 0), (320, 480), (0,255,0), 2)
-    cv2.line(overlay, (0, 240), (640, 240), (0,255,0), 2)
     
     #see if markers found, verify if its marker 0 for demo1
     if ids is not None:
@@ -86,6 +89,22 @@ while True:
         if 0 in ids:
             marker_index=list(ids).index(0)
             marker_corners = corners[marker_index][0]
+            #marker width
+            top_left=marker_corners[0]
+            top_right=marker_corners[1]
+
+            marker_width_pixels=math.sqrt((top_right[0]-top_left[0])**2+(top_right[1]-top_left[1])**2)
+
+            #distance cal
+            distance_constant = 1251.5
+            #calc distance to marker
+            distance_inches = distance_constant/marker_width_pixels
+            distance_feet = distance_inches/12
+            print("marker width:", marker_width_pixels)
+            print("distance {:.2f} inches".format(distance_inches))
+            print("distance: {:.2f} feet".format(distance_feet))
+        
+    
         #calc center of marker 0
             center_x=int(marker_corners[:,0].mean())
             center_y=int(marker_corners[:,1].mean())
@@ -95,6 +114,7 @@ while True:
             camera_center_x=320
         #horiz pixel diff from camera center
             pixel_offset=camera_center_x-center_x
+
         #focal length found from camera cal
             fx=652.5
             angle_rad=math.atan(pixel_offset/fx)#horizontal angle calc
@@ -103,40 +123,37 @@ while True:
             print("pixel offset:", pixel_offset)
             print("X Angle: {:.2f} degrees".format(angle_deg))
 
+        #send angle and distance
+            command = "{:.2f} {:.2f}\n".format(
+                angle_deg,
+                distance_inches
+                )
+            arduino.write(command.encode())
+            print("sent:",command.strip())
+        
+
     
-        #convert to text for lcd
-        message= "Marker Detected\nX Angle: {:.2f}".format(angle_deg)
-        if message !=last_message:
-            if lcd_queue.empty():
-                lcd_queue.put(message)
-            last_message=message
-       
-
+      # update LCD only when marker 0 is detected
+    if ids is not None and 0 in ids:
+        message = "Marker Detected\nX Angle: {:.2f}".format(angle_deg)
     else:
-        #print("no markers found")
-        message=last_message
-        
-    # only send to lcd if message has changed
+        message = "Searching..."
+
+    # only update LCD if message changed
     if message != last_message:
-        lcd_queue.put(message)#main thread puts message
-        
-    #send wheel goals to arduino
-        if ids is not None:#make sure marker exisits
-            command = "{}{}\n".format(right_goal,left_goal)#serial to the arduino
-            try:
-                arduino.write(command.encode())#convert to bytes, then send to arduino
-                print("sent to Arduino", command.strip())
+        if lcd_queue.empty():
+            lcd_queue.put(message)
+        last_message = message
 
-            except serial.SerialTimeoutException:#for timeout
-                print("write to arduino time out")
-        last_message=message#lcd thread displays
+    # display camera
+    cv2.imshow("aruco detection", overlay)
 
-    cv2.imshow("aruco detection", overlay)#display cam image
-    k=cv2.waitKey(1)&0xFF#wait 1ms and see if q pressed
-    if k==ord('q'):#stop program when q press
+    # check if q key is pressed
+    k = cv2.waitKey(1) & 0xFF
+    if k == ord('q'):
         break
 
+# runs after q breaks out of while loop
 camera.release()
 arduino.close()
 cv2.destroyAllWindows()
-        
