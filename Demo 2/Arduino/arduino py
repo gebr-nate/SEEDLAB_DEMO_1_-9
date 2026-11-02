@@ -11,9 +11,9 @@ const float WHEEL_DIAMETER_IN = 5.9;
 const float WHEEL_RADIUS_IN = WHEEL_DIAMETER_IN / 2.0;
 const float TRACK_WIDTH_IN = 8.0;         // <-- MEASURE THIS: distance between wheel centers [in]
 
-// +1 = positive angle spins the same direction as the old search (wheel 0 back, wheel 1 forward)
-// -1 = flip it. Use this if the robot turns the wrong way for a given angle.
-const float TURN_SIGN = 1.0;
+// Flips the direction of ALL turns (search and align).
+// -1 = flipped from the previous version.
+const float TURN_SIGN = -1.0;
 
 // ---- Accepted serial message limits ----
 const float MAX_ANGLE_DEG = 25.0;
