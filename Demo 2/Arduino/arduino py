@@ -1,29 +1,46 @@
-enum Mode { SEARCH, DRIVE, DONE };
-Mode mode = SEARCH;
-bool startDrive = false;                  // set when a valid distance arrives
+enum Mode { SEARCH_TURN, SEARCH_WAIT, ALIGN_TURN, DRIVE, DONE };
+Mode mode = SEARCH_TURN;
 
-// ---- Search setting ----
-const float SEARCH_SPEED = 2.0;           // wheel speed while spinning [rad/s]
-
-// ---- Sanity check on the received distance (rejects garbage) ----
-const float MIN_DIST_IN = 0.5;            // ignore tiny/zero values
-const float MAX_DIST_IN = 200.0;          // ignore absurdly large values
+// ---- Search behavior ----
+const float SEARCH_STEP_DEG = 30.0;       // turn this much each step
+const unsigned long SEARCH_PAUSE_MS = 5000; // pause between steps
+unsigned long pause_start_ms = 0;
 
 // ---- Robot geometry ----
 const float WHEEL_DIAMETER_IN = 5.9;
 const float WHEEL_RADIUS_IN = WHEEL_DIAMETER_IN / 2.0;
+const float TRACK_WIDTH_IN = 8.0;         // <-- MEASURE THIS: distance between wheel centers [in]
 
-// ---- Drive target (set when the message arrives) ----
-float target_rad = 0;                     // wheel rotation to drive [rad]
+// +1 = positive angle spins the same direction as the old search (wheel 0 back, wheel 1 forward)
+// -1 = flip it. Use this if the robot turns the wrong way for a given angle.
+const float TURN_SIGN = 1.0;
 
-// ---- Deadband ----
-const float POS_DEADBAND_RAD = 0.05;      // stop commanding motion when this close to target
+// ---- Accepted serial message limits ----
+const float MAX_ANGLE_DEG = 25.0;
+const float MIN_DIST_IN = 0.0;
+const float MAX_DIST_IN = 200.0;
+const float STOP_DISTANCE_IN = 0.0;       // stop this far short of the target [in] (0 = drive the full distance)
+
+// ---- Pending command (filled in by the serial parser) ----
+bool newCommand = false;
+float cmd_angle_deg = 0;
+float cmd_distance_in = 0;
+
+// ---- Move targets (per wheel, relative to the start of each move) ----
+float target_rad[2] = {0, 0};
+long moveStart_counts[2] = {0, 0};
+float pos_error_now[2] = {0, 0};
+
+// ---- Move completion ----
+const float POS_DEADBAND_RAD = 0.05;      // "close enough" for a wheel
+const int SETTLE_SAMPLES = 10;            // both wheels must be in the deadband this many samples (100 ms)
+const unsigned long MOVE_TIMEOUT_MS = 8000; // give up on a move if it hasn't settled
+int settle_count = 0;
+unsigned long move_start_ms = 0;
 
 // ---- Timing ----
-const unsigned long desired_Ts_ms = 10;   // sample time (100 Hz loop)
+const unsigned long desired_Ts_ms = 10;   // 100 Hz loop
 unsigned long last_time_ms;
-unsigned long start_time_ms;
-float current_time;                       // seconds since start
 
 // ---- Pins (index 0 = motor 1, index 1 = motor 2) ----
 const int enablePin = 4;
@@ -36,7 +53,6 @@ const int encB[2]   = {5, 6};
 const float COUNTS_PER_REV = 800.0;
 volatile long encoderCount[2] = {0, 0};
 long prevPos_counts[2] = {0, 0};
-long driveStart_counts[2] = {0, 0};       // encoder counts when the drive began
 
 // ---- Controller gains ----
 float Kp = 3;                     // inner velocity loop: volts per (rad/s)
@@ -45,35 +61,57 @@ float Ki_pos = 0.5;               // outer position loop integral
 const float MAX_SPEED = 8.0;      // cap on requested wheel speed [rad/s]
 const float Battery_Voltage = 7.6;
 
-// ---- Controller state ----
 float integral_error[2] = {0, 0};
 
 // ---- Encoder ISRs ----
 void encoderISR1() { encoderCount[0] += (digitalRead(encB[0]) == HIGH) ? 1 : -1; }
 void encoderISR2() { encoderCount[1] += (digitalRead(encB[1]) == HIGH) ? -1 : 1; }
 
-// ---- Read the distance (inches) from serial, non-blocking. Used once. ----
+// ---- Convert a spin-in-place angle to wheel radians (magnitude for each wheel) ----
+float turnDegToWheelRad(float deg) {
+  float arc_in = (TRACK_WIDTH_IN / 2.0) * (deg * PI / 180.0);  // arc each wheel travels
+  return arc_in / WHEEL_RADIUS_IN;
+}
+
+// ---- Begin a new position move ----
+void startMove(float t0, float t1, long c0, long c1, Mode newMode) {
+  target_rad[0] = t0;
+  target_rad[1] = t1;
+  moveStart_counts[0] = c0;
+  moveStart_counts[1] = c1;
+  integral_error[0] = 0;
+  integral_error[1] = 0;
+  settle_count = 0;
+  move_start_ms = millis();
+  mode = newMode;
+}
+
+// ---- Parse "angle distance\n" from serial, non-blocking ----
 void readSerialCommand() {
-  static char buf[16];
+  static char buf[32];
   static int idx = 0;
 
   while (Serial.available() > 0) {
     char c = Serial.read();
 
-    if (c == '\n' || c == '\r') {               // end of message
+    if (c == '\n' || c == '\r') {
       buf[idx] = '\0';
-      if (idx > 0) {
-        float distance_in = atof(buf);          // text -> number (garbage gives 0)
-
-        if (distance_in >= MIN_DIST_IN && distance_in <= MAX_DIST_IN) {
-          // Inches -> wheel radians
-          target_rad = distance_in / WHEEL_RADIUS_IN;
-          startDrive = true;
-          Serial.end();                         // close serial: no more input accepted
-          return;
+      if (idx > 0 && (mode == SEARCH_TURN || mode == SEARCH_WAIT)) {
+        char *end1;
+        float angle = strtod(buf, &end1);
+        if (end1 != buf) {                       // first number parsed
+          char *end2;
+          float dist = strtod(end1, &end2);
+          if (end2 != end1 &&                    // second number parsed
+              angle >= -MAX_ANGLE_DEG && angle <= MAX_ANGLE_DEG &&
+              dist > MIN_DIST_IN && dist <= MAX_DIST_IN) {
+            cmd_angle_deg = angle;
+            cmd_distance_in = dist;
+            newCommand = true;
+          }
         }
       }
-      idx = 0;                                  // invalid message, wait for the next one
+      idx = 0;
     } else if (idx < (int)sizeof(buf) - 1) {
       buf[idx++] = c;
     }
@@ -90,24 +128,24 @@ void setup() {
   }
   attachInterrupt(digitalPinToInterrupt(encA[0]), encoderISR1, RISING);
   attachInterrupt(digitalPinToInterrupt(encA[1]), encoderISR2, RISING);
-  digitalWrite(enablePin, HIGH);                // motor driver on
+  digitalWrite(enablePin, HIGH);
 
   Serial.begin(115200);
   last_time_ms = millis();
-  start_time_ms = last_time_ms;
+
+  // Kick off the first 30 degree search turn
+  float w = turnDegToWheelRad(SEARCH_STEP_DEG);
+  startMove(-TURN_SIGN * w, TURN_SIGN * w, 0, 0, SEARCH_TURN);
 }
 
 void loop() {
-  if (mode == SEARCH && !startDrive) {
-    readSerialCommand();                        // only listen while searching
-  }
+  readSerialCommand();
 
-  // ---- Run the controller at a fixed 10 ms rate ----
+  // ---- Fixed 10 ms control rate ----
   if (millis() - last_time_ms < desired_Ts_ms) return;
   last_time_ms += desired_Ts_ms;
 
   float Ts = (float)desired_Ts_ms / 1000.0;
-  current_time = (float)(millis() - start_time_ms) / 1000.0;
 
   long counts[2];
   noInterrupts();
@@ -115,41 +153,37 @@ void loop() {
   counts[1] = encoderCount[1];
   interrupts();
 
-  if (startDrive) {
-    startDrive = false;
-    driveStart_counts[0] = counts[0];
-    driveStart_counts[1] = counts[1];
-    integral_error[0] = 0;
-    integral_error[1] = 0;
-    mode = DRIVE;                               // stops spinning, starts driving
+  // ---- A valid message arrived: turn to face the target ----
+  if (newCommand) {
+    newCommand = false;
+    float w = turnDegToWheelRad(fabs(cmd_angle_deg));
+    float dir = (cmd_angle_deg >= 0) ? 1.0 : -1.0;
+    // Positive angle spins the same way as the search turn
+    startMove(-TURN_SIGN * dir * w, TURN_SIGN * dir * w, counts[0], counts[1], ALIGN_TURN);
   }
 
-  bool atTarget[2] = {false, false};
+  // ---- Pause timer between search turns ----
+  if (mode == SEARCH_WAIT && millis() - pause_start_ms >= SEARCH_PAUSE_MS) {
+    float w = turnDegToWheelRad(SEARCH_STEP_DEG);
+    startMove(-TURN_SIGN * w, TURN_SIGN * w, counts[0], counts[1], SEARCH_TURN);
+  }
 
+  // ---- Control loop for each wheel ----
   for (int i = 0; i < 2; i++) {
-    // ---- Measurements ----
     float actual_speed = 2 * PI * (float)(counts[i] - prevPos_counts[i]) / COUNTS_PER_REV / Ts;
     prevPos_counts[i] = counts[i];
 
-    // ---- Speed command depends on the mode ----
     float desired_speed = 0;
+    bool moving = (mode == SEARCH_TURN || mode == ALIGN_TURN || mode == DRIVE);
 
-    if (mode == SEARCH) {
-      // Spin in place: wheels turn in opposite directions.
-      // If the robot spins the wrong way, swap the signs.
-      desired_speed = (i == 0) ? -SEARCH_SPEED : SEARCH_SPEED;
-
-    } else if (mode == DRIVE) {
-      // Wheel position since the drive began [rad]
-      float actual_pos = 2 * PI * (float)(counts[i] - driveStart_counts[i]) / COUNTS_PER_REV;
-
-      // Outer loop: PI position -> desired speed
-      float pos_error = target_rad - actual_pos;
+    if (moving) {
+      float actual_pos = 2 * PI * (float)(counts[i] - moveStart_counts[i]) / COUNTS_PER_REV;
+      float pos_error = target_rad[i] - actual_pos;
+      pos_error_now[i] = pos_error;
 
       if (fabs(pos_error) < POS_DEADBAND_RAD) {
-        desired_speed = 0;                      // close enough, stop twitching
+        desired_speed = 0;
         integral_error[i] = 0;
-        atTarget[i] = true;
       } else {
         integral_error[i] += pos_error * Ts;
         desired_speed = Kp_pos * pos_error + Ki_pos * integral_error[i];
@@ -158,31 +192,46 @@ void loop() {
           integral_error[i] -= pos_error * Ts;  // anti-windup
         }
       }
-
-    } else {
-      // DONE: hold still
-      desired_speed = 0;
     }
+    // SEARCH_WAIT and DONE: desired_speed stays 0 (hold still)
+
     desired_speed = constrain(desired_speed, -MAX_SPEED, MAX_SPEED);
 
-    // ---- Inner loop: P velocity -> voltage ----
+    // ---- Inner velocity loop ----
     float error = desired_speed - actual_speed;
     float Voltage = Kp * error;
 
-    // ---- Output ----
     if (i == 0) {
-      // Motor 0 stays normal
       digitalWrite(dirPin[i], (Voltage > 0) ? HIGH : LOW);
     } else {
-      // Motor 1 is physically reversed
-      digitalWrite(dirPin[i], (Voltage > 0) ? LOW : HIGH);
+      digitalWrite(dirPin[i], (Voltage > 0) ? LOW : HIGH);   // motor 1 physically reversed
     }
     unsigned int PWM = 255 * fabs(Voltage) / Battery_Voltage;
     analogWrite(pwmPin[i], min(PWM, 255));
   }
 
-  // Both wheels reached the target: finish
-  if (mode == DRIVE && atTarget[0] && atTarget[1]) {
-    mode = DONE;
+  // ---- Has the current move finished? ----
+  if (mode == SEARCH_TURN || mode == ALIGN_TURN || mode == DRIVE) {
+    bool inBand = fabs(pos_error_now[0]) < POS_DEADBAND_RAD &&
+                  fabs(pos_error_now[1]) < POS_DEADBAND_RAD;
+    settle_count = inBand ? settle_count + 1 : 0;
+
+    bool finished = (settle_count >= SETTLE_SAMPLES) ||
+                    (millis() - move_start_ms > MOVE_TIMEOUT_MS);
+
+    if (finished) {
+      if (mode == SEARCH_TURN) {
+        pause_start_ms = millis();
+        mode = SEARCH_WAIT;
+      } else if (mode == ALIGN_TURN) {
+        // Now facing 0 degrees: drive straight forward
+        float drive_in = cmd_distance_in - STOP_DISTANCE_IN;
+        if (drive_in < 0) drive_in = 0;
+        float r = drive_in / WHEEL_RADIUS_IN;
+        startMove(r, r, counts[0], counts[1], DRIVE);
+      } else {
+        mode = DONE;
+      }
+    }
   }
 }
