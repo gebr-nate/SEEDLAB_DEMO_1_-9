@@ -9,7 +9,7 @@ unsigned long pause_start_ms = 0;
 // ---- Robot geometry ----
 const float WHEEL_DIAMETER_IN = 5.9;
 const float WHEEL_RADIUS_IN = WHEEL_DIAMETER_IN / 2.0;
-const float TRACK_WIDTH_IN = 8.0;         // <-- MEASURE THIS: distance between wheel centers [in]
+const float TRACK_WIDTH_IN = 15.0;         // <-- MEASURE THIS: distance between wheel centers [in]
 
 // Flips the direction of ALL turns (search and align).
 // -1 = flipped from the previous version.
@@ -19,7 +19,7 @@ const float TURN_SIGN = -1.0;
 const float MAX_ANGLE_DEG = 25.0;
 const float MIN_DIST_IN = 0.0;
 const float MAX_DIST_IN = 200.0;
-const float STOP_DISTANCE_IN = 0.0;       // stop this far short of the target [in] (0 = drive the full distance)
+const float STOP_DISTANCE_IN = 8.0;       // stop this far short of the target [in] (0 = drive the full distance)
 
 // ---- Pending command (filled in by the serial parser) ----
 bool newCommand = false;
@@ -34,7 +34,7 @@ float pos_error_now[2] = {0, 0};
 // ---- Move completion ----
 const float POS_DEADBAND_RAD = 0.05;      // "close enough" for a wheel
 const int SETTLE_SAMPLES = 10;            // both wheels must be in the deadband this many samples (100 ms)
-const unsigned long MOVE_TIMEOUT_MS = 8000; // give up on a move if it hasn't settled
+const unsigned long MOVE_TIMEOUT_MS = 24000; // give up on a move if it hasn't settled
 int settle_count = 0;
 unsigned long move_start_ms = 0;
 
@@ -55,10 +55,10 @@ volatile long encoderCount[2] = {0, 0};
 long prevPos_counts[2] = {0, 0};
 
 // ---- Controller gains ----
-float Kp = 3;                     // inner velocity loop: volts per (rad/s)
+float Kp = 2.5;                     // inner velocity loop: volts per (rad/s)
 float Kp_pos = 5.0;               // outer position loop: (rad/s) per rad
 float Ki_pos = 0.5;               // outer position loop integral
-const float MAX_SPEED = 8.0;      // cap on requested wheel speed [rad/s]
+const float MAX_SPEED = 2.0;      // cap on requested wheel speed [rad/s]
 const float Battery_Voltage = 7.6;
 
 float integral_error[2] = {0, 0};
@@ -228,7 +228,7 @@ void loop() {
         float drive_in = cmd_distance_in - STOP_DISTANCE_IN;
         if (drive_in < 0) drive_in = 0;
         float r = drive_in / WHEEL_RADIUS_IN;
-        startMove(r, r, counts[0], counts[1], DRIVE);
+        startMove(-r, -r, counts[0], counts[1], DRIVE);
       } else {
         mode = DONE;
       }
