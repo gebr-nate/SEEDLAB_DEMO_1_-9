@@ -1,0 +1,561 @@
+#demo 2 - Jake Toschik/Megan Brady
+# detect marker and go at it, or go at marker and turn left or right
+
+import math
+import cv2
+from cv2 import aruco
+from time import sleep
+import threading
+import queue
+import board
+import busio
+import adafruit_character_lcd.character_lcd_rgb_i2c as character_lcd
+import serial
+
+#if we want to turn or no
+ENABLE_ARROW_TURN = True
+
+arduino = serial.Serial(
+    '/dev/ttyACM0',
+    115200,
+    timeout=1
+)
+
+# Allow Arduino to reset and start
+sleep(2)
+
+
+lcd_queue = queue.Queue(maxsize=1)
+
+lcd_columns = 16
+lcd_rows = 2
+
+i2c = board.I2C()
+
+lcd = character_lcd.Character_LCD_RGB_I2C(
+    i2c,
+    lcd_columns,
+    lcd_rows
+)
+
+def update_lcd():
+    while True:
+        message = lcd_queue.get()
+        lcd.message = message
+
+lcd_thread = threading.Thread(
+    target=update_lcd,
+    daemon=True
+)
+
+lcd_thread.start()
+
+# ============================================================
+# ARUCO SETUP
+# ============================================================
+
+aruco_dict = aruco.getPredefinedDictionary(
+    aruco.DICT_6X6_50
+)
+
+parameters = aruco.DetectorParameters()
+parameters.minMarkerPerimeterRate = 0.01
+
+# ============================================================
+# CAMERA SETUP
+# ============================================================
+
+camera = cv2.VideoCapture(0)
+
+camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+camera.set(cv2.CAP_PROP_FPS, 30)
+camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+sleep(0.5)
+
+# ============================================================
+# VARIABLES
+# ============================================================
+
+last_message = ""
+
+command_sent = False
+
+stable_count = 0
+previous_distance = None
+previous_angle = None
+
+# Camera calibration
+distance_constant = 1251.5
+fx = 652.5
+
+# ============================================================
+# ARROW DETECTION
+#
+# Green = LEFT
+# Red   = RIGHT
+# ============================================================
+
+def detect_arrow(frame, marker_corners):
+
+    hsv = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2HSV
+    )
+
+    # ---- Green arrow ----
+
+    green_lower = (35, 80, 60)
+    green_upper = (85, 255, 255)
+
+    green_mask = cv2.inRange(
+        hsv,
+        green_lower,
+        green_upper
+    )
+
+    # ---- Red arrow ----
+
+    red_mask1 = cv2.inRange(
+        hsv,
+        (0, 100, 70),
+        (10, 255, 255)
+    )
+
+    red_mask2 = cv2.inRange(
+        hsv,
+        (170, 100, 70),
+        (179, 255, 255)
+    )
+
+    red_mask = cv2.bitwise_or(
+        red_mask1,
+        red_mask2
+    )
+
+    # ---- Find marker boundaries ----
+
+    x_min = int(marker_corners[:, 0].min())
+    x_max = int(marker_corners[:, 0].max())
+
+    y_min = int(marker_corners[:, 1].min())
+    y_max = int(marker_corners[:, 1].max())
+
+    marker_width = x_max - x_min
+    marker_height = y_max - y_min
+
+    height, width = frame.shape[:2]
+
+    # ---- Search region around marker ----
+
+    x1 = max(
+        0,
+        x_min - 2 * marker_width
+    )
+
+    x2 = min(
+        width,
+        x_max + 2 * marker_width
+    )
+
+    y1 = max(
+        0,
+        y_min - marker_height // 2
+    )
+
+    y2 = min(
+        height,
+        y_max + marker_height // 2
+    )
+
+    green_roi = green_mask[y1:y2, x1:x2]
+    red_roi = red_mask[y1:y2, x1:x2]
+
+    green_pixels = cv2.countNonZero(green_roi)
+    red_pixels = cv2.countNonZero(red_roi)
+
+    # ---- Minimum pixels needed ----
+
+    min_pixels = max(
+        20,
+        int(marker_width * marker_height * 0.03)
+    )
+
+    # ---- Determine direction ----
+
+    if (
+        green_pixels > min_pixels and
+        green_pixels > red_pixels * 2
+    ):
+        return 'L'
+
+    if (
+        red_pixels > min_pixels and
+        red_pixels > green_pixels * 2
+    ):
+        return 'R'
+
+    return None
+
+
+# ============================================================
+# MAIN CAMERA LOOP
+# ============================================================
+
+try:
+
+    while True:
+
+        # Check whether Arduino restarted
+        while arduino.in_waiting > 0:
+            response = arduino.readline().decode(
+                "ascii", errors="replace"
+            ).strip()
+
+            if response:
+                print("ARDUINO:", response)
+
+            if response == "ARDUINO READY":
+                command_sent = False
+                stable_count = 0
+                previous_distance = None
+                previous_angle = None
+                print("Arduino reset detected - ready for new command")
+
+        ret, frame = camera.read()
+
+        if not ret:
+            print("Didn't read camera")
+            continue
+
+        # ---- Convert to grayscale ----
+
+        grey = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        # ---- Detect ArUco markers ----
+
+        corners, ids, rejected = aruco.detectMarkers(
+            grey,
+            aruco_dict,
+            parameters=parameters
+        )
+
+        # ---- Make camera overlay ----
+
+        overlay = frame.copy()
+
+        cv2.line(
+            overlay,
+            (320, 0),
+            (320, 480),
+            (0, 255, 0),
+            2
+        )
+
+        marker_detected = False
+        arrow_direction = None
+        angle_deg = 0.0
+
+        # ====================================================
+        # MARKER DETECTION
+        # ====================================================
+
+        if ids is not None:
+
+            ids = ids.flatten()
+
+            aruco.drawDetectedMarkers(
+                overlay,
+                corners,
+                ids
+            )
+
+            if 0 in ids:
+
+                marker_detected = True
+
+                marker_index = list(ids).index(0)
+
+                marker_corners = corners[marker_index][0]
+
+                # ---- Calculate marker width ----
+
+                top_left = marker_corners[0]
+                top_right = marker_corners[1]
+
+                marker_width_pixels = math.sqrt(
+                    (top_right[0] - top_left[0])**2 +
+                    (top_right[1] - top_left[1])**2
+                )
+
+                if marker_width_pixels > 0:
+
+                    # ========================================
+                    # DISTANCE CALCULATION
+                    # ========================================
+
+                    distance_inches = (
+                        distance_constant / marker_width_pixels
+                    )
+
+                    distance_feet = distance_inches / 12.0
+
+                    print(
+                        "Marker width:",
+                        marker_width_pixels
+                    )
+
+                    print(
+                        "Distance: {:.2f} inches".format(
+                            distance_inches
+                        )
+                    )
+
+                    print(
+                        "Distance: {:.2f} feet".format(
+                            distance_feet
+                        )
+                    )
+
+                    # ========================================
+                    # ANGLE CALCULATION
+                    # ========================================
+
+                    center_x = int(
+                        marker_corners[:, 0].mean()
+                    )
+
+                    center_y = int(
+                        marker_corners[:, 1].mean()
+                    )
+
+                    cv2.circle(
+                        overlay,
+                        (center_x, center_y),
+                        5,
+                        (0, 0, 255),
+                        -1
+                    )
+
+                    camera_center_x = 320
+
+                    pixel_offset = (
+                        camera_center_x - center_x
+                    )
+
+                    angle_rad = math.atan(
+                        pixel_offset / fx
+                    )
+
+                    angle_deg = math.degrees(
+                        angle_rad
+                    )
+
+                    print("Marker center:", center_x)
+                    print("Pixel offset:", pixel_offset)
+
+                    print(
+                        "X Angle: {:.2f} degrees".format(
+                            angle_deg
+                        )
+                    )
+
+                    # ========================================
+                    # ARROW DETECTION
+                    # ========================================
+
+                    if ENABLE_ARROW_TURN:
+
+                        arrow_direction = detect_arrow(
+                            frame,
+                            marker_corners
+                        )
+
+                        print(
+                            "Arrow direction:",
+                            arrow_direction
+                        )
+
+                    # ========================================
+                    # SERIAL COMMAND
+                    # ========================================
+
+                    if not command_sent:
+
+                        command = None
+
+                        if ENABLE_ARROW_TURN:
+
+                            # Test 2:
+                            # Distance, angle, arrow
+
+                            if arrow_direction in ('L', 'R'):
+
+                                command = (
+                                    "{:.2f},{:.2f},{}\n".format(
+                                        distance_inches,
+                                        angle_deg,
+                                        arrow_direction
+                                    )
+                                )
+
+                        else:
+
+                            # Test 1:
+                            # Distance, angle
+
+                            command = (
+                                "{:.2f},{:.2f}\n".format(
+                                    distance_inches,
+                                    angle_deg
+                                )
+                            )
+
+                        # ====================================
+                        # CHECK DISTANCE RANGE
+                        # ====================================
+
+                        if (
+                            command is not None and
+                            30 <= distance_inches <= 100
+                        ):
+
+                            # ================================
+                            # CHECK STABLE DETECTION
+                            # ================================
+
+                            if (
+                                previous_distance is not None and
+                                previous_angle is not None
+                            ):
+
+                                if (
+                                    abs(
+                                        distance_inches -
+                                        previous_distance
+                                    ) <= 4.0
+                                    and
+                                    abs(
+                                        angle_deg -
+                                        previous_angle
+                                    ) <= 4.0
+                                ):
+
+                                    stable_count += 1
+
+                                else:
+
+                                    stable_count = 1
+
+                            else:
+
+                                stable_count = 1
+
+                            previous_distance = distance_inches
+                            previous_angle = angle_deg
+
+                            # ================================
+                            # SEND TO ARDUINO
+                            # ================================
+
+                            if stable_count >= 5:
+
+                                arduino.write(
+                                    command.encode("ascii")
+                                )
+
+                                arduino.flush()
+
+                                print(
+                                    "Sent to Arduino:",
+                                    command.strip()
+                                )
+
+                                command_sent = True
+
+                                # ============================
+                                # READ ARDUINO RESPONSE
+                                # ============================
+
+                                sleep(0.2)
+
+                                while arduino.in_waiting > 0:
+
+                                    response = (
+                                        arduino.readline()
+                                        .decode(
+                                            "ascii",
+                                            errors="replace"
+                                        )
+                                        .strip()
+                                    )
+
+                                    print(
+                                        "ARDUINO:",
+                                        repr(response)
+                                    )
+
+                        else:
+
+                            stable_count = 0
+                            previous_distance = None
+                            previous_angle = None
+
+        # ====================================================
+        # LCD DISPLAY
+        # ====================================================
+
+        if marker_detected:
+
+            message = (
+                "Marker Detected\n"
+                "X Angle: {:.2f}".format(
+                    angle_deg
+                )
+            )
+
+        else:
+
+            message = "Searching..."
+
+            if not command_sent:
+
+                stable_count = 0
+                previous_distance = None
+                previous_angle = None
+
+        if message != last_message:
+
+            if lcd_queue.empty():
+
+                lcd_queue.put(message)
+
+            last_message = message
+
+        # ====================================================
+        # CAMERA DISPLAY
+        # ====================================================
+
+        cv2.imshow(
+            "aruco detection",
+            overlay
+        )
+
+        k = cv2.waitKey(1) & 0xFF
+
+        if k == ord('q'):
+            break
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+finally:
+
+    camera.release()
+    arduino.close()
+    cv2.destroyAllWindows()
